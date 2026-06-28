@@ -1,4 +1,4 @@
-use std::slice::Iter;
+use std::{path::PathBuf, slice::Iter};
 
 use serde::Deserialize;
 #[derive(Deserialize, Debug)]
@@ -24,6 +24,7 @@ pub struct Annotation {
 #[derive(Deserialize, Debug)]
 pub struct COCOImage {
     pub license: Option<u32>,
+    pub filename: Option<PathBuf>,
     pub coco_url: Option<String>,
     pub height: u32,
     pub width: u32,
