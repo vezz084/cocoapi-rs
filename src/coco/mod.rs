@@ -4,20 +4,22 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufReader, Error},
+    ops::Range,
     path::{Path, PathBuf},
 };
 
 pub use coco_types::*;
+#[derive(Debug)]
+struct COCOIndices {
+    // image_id_to_filename: HashMap<&'a u32, PathBuf>,
+    image_id_to_annotation_ids: HashMap<u32, Range<usize>>,
+}
 
 #[derive(Debug)]
 pub struct COCO {
     coco_dataset: COCODetection,
     root_dir: PathBuf,
-}
-
-struct COCOIndices<'a> {
-    image_id_to_filename: HashMap<&'a u32, PathBuf>,
-    image_id_to_annotation_ids: HashMap<&'a u32, Vec<&'a Annotation>>,
+    coco_indices: COCOIndices,
 }
 
 impl COCO {
@@ -26,43 +28,69 @@ impl COCO {
 
         let file_buffer = BufReader::new(file);
 
-        let json_data: COCODetection = serde_json::from_reader(file_buffer)?;
+        let mut json_data: COCODetection = serde_json::from_reader(file_buffer)?;
 
-        COCOIndices::new(&json_data, &root_dir);
+        json_data.sort_images_inplace();
+        json_data.sort_annots_inplace();
+
+        let indices = COCOIndices::new(&json_data);
+
         Ok(COCO {
             coco_dataset: json_data,
             root_dir: root_dir,
+            coco_indices: indices,
         })
     }
 }
 
-impl<'a> COCOIndices<'a> {
-    fn new(coco_detections: &'a COCODetection, root_dir: &Path) -> Self {
-        let coco_images = coco_detections.iter_images();
-        let mut id_to_img_path: HashMap<&u32, PathBuf> = HashMap::with_capacity(coco_images.len());
+impl COCOIndices {
+    fn new(coco_detections: &COCODetection) -> Self {
+        let mut hashmap: HashMap<u32, Range<usize>> =
+            HashMap::with_capacity(coco_detections.iter_images().len());
 
-        for coco_image in coco_images {
-            id_to_img_path.insert(
-                &coco_image.id,
-                root_dir.join(coco_image.filename.as_ref().unwrap()),
-            );
+        let mut current_image_id: Option<u32> = None;
+        let mut current_image_id_start: Option<usize> = None;
+        let mut current_image_id_end: Option<usize> = None;
+
+        let mut curr_index: usize = 0;
+        for coco_annotation in coco_detections.iter_annotations() {
+            if current_image_id.is_none() {
+                current_image_id = Some(coco_annotation.image_id);
+                current_image_id_start = Some(curr_index);
+                current_image_id_end = Some(curr_index);
+                curr_index += 1;
+                continue;
+            }
+
+            if current_image_id.unwrap() == coco_annotation.image_id {
+                current_image_id_end = Some(current_image_id_end.unwrap() + 1);
+            } else {
+                hashmap.insert(
+                    current_image_id.unwrap(),
+                    Range {
+                        start: current_image_id_start.unwrap(),
+                        end: current_image_id_end.unwrap() + 1,
+                    },
+                );
+
+                current_image_id = Some(coco_annotation.image_id);
+                current_image_id_start = Some(curr_index);
+                current_image_id_end = Some(curr_index);
+            }
+
+            curr_index += 1;
         }
 
-        let coco_images = coco_detections.iter_images();
-
-        let mut image_id_to_annotations: HashMap<&u32, Vec<&Annotation>> =
-            HashMap::with_capacity(coco_images.len());
-
-        for coco_image in coco_images {
-            let annots = coco_detections
-                .get_annotations_from_image_ids(&[coco_image.id])
-                .collect();
-            image_id_to_annotations.insert(&coco_image.id, annots);
-        }
+        hashmap.insert(
+            current_image_id.unwrap(),
+            Range {
+                start: current_image_id_start.unwrap(),
+                end: current_image_id_end.unwrap() + 1,
+            },
+        );
 
         COCOIndices {
-            image_id_to_filename: id_to_img_path,
-            image_id_to_annotation_ids: image_id_to_annotations,
+            image_id_to_annotation_ids: hashmap,
         }
     }
 }

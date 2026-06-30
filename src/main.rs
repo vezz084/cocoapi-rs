@@ -13,5 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     COCO::new(root_dir_path, annotation_path)?;
 
+    println!("Done!!");
+
     Ok(())
 }

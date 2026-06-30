@@ -45,6 +45,15 @@ impl COCODetection {
         self.images.iter()
     }
 
+    pub fn sort_images_inplace(&mut self) {
+        self.images.sort_unstable_by_key(|coco_image| coco_image.id);
+    }
+
+    pub fn sort_annots_inplace(&mut self) {
+        self.annotations
+            .sort_unstable_by_key(|coco_annotation| coco_annotation.image_id);
+    }
+
     pub fn iter_annotations(&self) -> Iter<'_, Annotation> {
         self.annotations.iter()
     }
