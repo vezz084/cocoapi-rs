@@ -51,7 +51,12 @@ impl COCODetection {
 
     pub fn sort_annots_inplace(&mut self) {
         self.annotations
-            .sort_unstable_by_key(|coco_annotation| coco_annotation.image_id);
+            .sort_unstable_by_key(|coco_annotation| coco_annotation.id);
+    }
+
+    pub fn sort_categories_inplace(&mut self) {
+        self.categories
+            .sort_unstable_by_key(|coco_category| coco_category.id);
     }
 
     pub fn iter_annotations(&self) -> Iter<'_, Annotation> {
@@ -77,5 +82,53 @@ impl COCODetection {
     ) -> impl Iterator<Item = &Annotation> {
         self.iter_annotations()
             .filter(|coco_annotation| image_ids.contains(&coco_annotation.image_id))
+    }
+}
+
+pub trait COCOEntry {
+    type Id;
+
+    fn get_id(&self) -> Self::Id;
+}
+
+impl COCOEntry for COCOImage {
+    type Id = u32;
+    fn get_id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+impl COCOEntry for Annotation {
+    type Id = u128;
+    fn get_id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+impl COCOEntry for COCOCategory {
+    type Id = u32;
+    fn get_id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+impl<'a> COCOEntry for &'a COCOImage {
+    type Id = u32;
+    fn get_id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+impl<'a> COCOEntry for &'a Annotation {
+    type Id = u128;
+    fn get_id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+impl<'a> COCOEntry for &'a COCOCategory {
+    type Id = u32;
+    fn get_id(&self) -> Self::Id {
+        self.id
     }
 }
