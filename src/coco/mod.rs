@@ -8,9 +8,12 @@ use log::{debug, error, info, warn};
 pub use coco_types::*;
 #[derive(Debug)]
 struct COCOIndices {
-    image_id_to_image: HashMap<u32, Range<usize>>,
-    annotation_id_to_annotation: HashMap<u128, Range<usize>>,
-    category_id_to_category: HashMap<u32, Range<usize>>,
+    image_id_to_image: HashMap<u32, usize>,
+    annotation_id_to_annotation: HashMap<u128, usize>,
+    category_id_to_category: HashMap<u32, usize>,
+    image_id_to_annotation_ids: HashMap<u32, Vec<u128>>,
+    category_id_to_image_ids: HashMap<u32, Vec<u32>>,
+    category_id_to_annotation_ids: HashMap<u32, Vec<u128>>,
 }
 
 #[derive(Debug)]
@@ -27,26 +30,8 @@ impl COCO {
 
         let file_buffer = BufReader::new(file);
 
-        let mut json_data: COCODetection = serde_json::from_reader(file_buffer)
+        let json_data: COCODetection = serde_json::from_reader(file_buffer)
             .inspect_err(|e| error!("Error deserializing json file: {e}"))?;
-
-        // After serde has deserialized the json into COCODetection, we have two choices:
-        // Create HashMaps with id as key and then indices to the original structs as value
-        // This will result in multiple heap allocations per id and as we dont know how many
-        // structs are there for a id, the vector resize will incur overhead as well
-        //
-        // We do know the total number of structs beforehand. The sum total of all the
-        // hashmap's values' elements will be equal to that. We can utilize this to
-        // allocate one big memory chunk at once and then create sub vectors from that memory
-        // That will not only result in less allocations but the memory will be tightly packed
-        //
-        // I dont think this is possible in vanilla rust. For that reason, this is the alt sol:
-        // sort the annotations and images in place (once they are read from json, user shouldnt be able to mutate them)
-        // Store ranges for id [start_pos..end_pos(inclusive)]
-
-        json_data.sort_images_inplace();
-        json_data.sort_annots_inplace();
-        json_data.sort_categories_inplace();
 
         info!("Total Images: {}", json_data.iter_images().len());
         info!("Total Annotations: {}", json_data.iter_annotations().len());
@@ -64,10 +49,22 @@ impl COCO {
             coco_indices: indices,
         })
     }
+
+    // pub fn get_images_from_ids(&self, ids: &[u32]) -> Vec<Option<COCOImage>> {
+    //     let mut result: Vec<Option<COCOImage>> = Vec::new();
+
+    //     for coco_id in ids {
+    //         result.push( match self.coco_indices.image_id_to_image.get(coco_id){
+    //             Some(range) => self.coco_dataset.iter_images().filter(predicate),
+    //             None => None
+    //         });
+    //     }
+    //     return result;
+    // }
 }
 
 impl COCOIndices {
-    fn create_hashmap<T>(iterator: impl ExactSizeIterator<Item = T>) -> HashMap<T::Id, Range<usize>>
+    fn create_index<T>(iterator: impl ExactSizeIterator<Item = T>) -> HashMap<T::Id, usize>
     where
         T: COCOEntry,
         T::Id: Eq + Hash + Copy, // Eq because we are comparing, Hash because
@@ -75,56 +72,171 @@ impl COCOIndices {
                                  // Copy because it gets copied to hashmap as key
     {
         // Create a hashmap to store entry_id -> start..end
-        let mut image_id_to_indices: HashMap<T::Id, Range<usize>> =
-            HashMap::with_capacity(iterator.len());
-
-        let mut current_image_id: Option<T::Id> = None;
-        let mut current_image_id_start: Option<usize> = None;
-        let mut current_image_id_end: Option<usize> = None;
+        let mut entry_id_to_index: HashMap<T::Id, usize> = HashMap::with_capacity(iterator.len());
 
         for (curr_index, coco_image) in iterator.enumerate() {
-            if current_image_id.is_none() {
-                current_image_id = Some(coco_image.get_id());
-                current_image_id_start = Some(curr_index);
-                current_image_id_end = Some(curr_index);
-                continue;
-            }
-
-            if current_image_id.unwrap() == coco_image.get_id() {
-                current_image_id_end = Some(current_image_id_end.unwrap() + 1);
-            } else {
-                image_id_to_indices.insert(
-                    current_image_id.unwrap(),
-                    current_image_id_start.unwrap()..current_image_id_end.unwrap() + 1,
-                );
-
-                current_image_id = Some(coco_image.get_id());
-                current_image_id_start = Some(curr_index);
-                current_image_id_end = Some(curr_index);
-            }
+            entry_id_to_index.insert(coco_image.get_id(), curr_index);
         }
 
-        image_id_to_indices.insert(
-            current_image_id.unwrap(),
-            current_image_id_start.unwrap()..current_image_id_end.unwrap() + 1,
-        );
-        image_id_to_indices
+        entry_id_to_index
     }
 
-    fn new(coco_detections: &COCODetection) -> Self {
-        // We have our annotations and images sorted already according to their ids
-        //
-        let image_id_to_indices = COCOIndices::create_hashmap(coco_detections.iter_images());
+    fn new(coco_detections: &COCODetection) -> COCOIndices {
+        // We have our annotations sorted already according to their ids
+        let image_id_to_image = COCOIndices::create_index(coco_detections.iter_images());
+        let category_id_to_category = COCOIndices::create_index(coco_detections.iter_categories());
+        let annotation_id_to_annotation =
+            COCOIndices::create_index(coco_detections.iter_annotations());
 
-        let annotation_id_to_indices =
-            COCOIndices::create_hashmap(coco_detections.iter_annotations());
+        let mut image_id_to_annotation_ids: HashMap<u32, Vec<u128>> =
+            HashMap::with_capacity(coco_detections.iter_images().len());
+        let mut category_id_to_image_ids: HashMap<u32, Vec<u32>> =
+            HashMap::with_capacity(coco_detections.iter_categories().len());
+        let mut category_id_to_annotation_ids: HashMap<u32, Vec<u128>> =
+            HashMap::with_capacity(coco_detections.iter_categories().len());
 
-        let category_id_to_indices = COCOIndices::create_hashmap(coco_detections.iter_categories());
+        for coco_annotation in coco_detections.iter_annotations() {
+            image_id_to_annotation_ids
+                .entry(coco_annotation.image_id)
+                .or_default()
+                .push(coco_annotation.id);
+            category_id_to_annotation_ids
+                .entry(coco_annotation.category_id)
+                .or_default()
+                .push(coco_annotation.id);
+
+            category_id_to_image_ids
+                .entry(coco_annotation.category_id)
+                .or_default()
+                .push(coco_annotation.image_id);
+        }
 
         Self {
-            image_id_to_image: image_id_to_indices,
-            annotation_id_to_annotation: annotation_id_to_indices,
-            category_id_to_category: category_id_to_indices,
+            image_id_to_image,
+            annotation_id_to_annotation,
+            category_id_to_category,
+            image_id_to_annotation_ids,
+            category_id_to_image_ids,
+            category_id_to_annotation_ids,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::OnceLock;
+
+    // The shared, global instance initialized exactly once
+    static COCO_INSTANCE: OnceLock<COCO> = OnceLock::new();
+
+    fn get_shared_coco() -> &'static COCO {
+        COCO_INSTANCE.get_or_init(|| {
+            let ann_file = "./test_assets/stuff_val2017.json";
+            let root_dir = ".";
+
+            COCO::new(PathBuf::from(root_dir), PathBuf::from(ann_file))
+                .expect("Failed to load global test COCO dataset")
+        })
+    }
+
+    #[test]
+    fn test_annotation_count_for_image() {
+        let coco = get_shared_coco();
+        let ann_ids_test_1 = coco.coco_indices.image_id_to_annotation_ids.get(&581781);
+
+        let ann_ids_test_2 = coco.coco_indices.image_id_to_annotation_ids.get(&170278);
+
+        let ann_ids_test_3 = coco.coco_indices.image_id_to_annotation_ids.get(&0);
+
+        assert_eq!(ann_ids_test_1.unwrap().len(), 5);
+        assert_eq!(ann_ids_test_2.unwrap().len(), 7);
+        assert_eq!(ann_ids_test_3, None);
+    }
+
+    #[test]
+    fn test_exact_annotation_ids() {
+        let coco = get_shared_coco();
+        let ann_ids_test_1 = coco
+            .coco_indices
+            .image_id_to_annotation_ids
+            .get(&581781)
+            .unwrap();
+
+        let ann_ids_test_2 = coco
+            .coco_indices
+            .image_id_to_annotation_ids
+            .get(&170278)
+            .unwrap();
+
+        let ann_ids_test_3 = coco.coco_indices.image_id_to_annotation_ids.get(&0);
+
+        assert_eq!(ann_ids_test_1, &(20032796..20032801).collect::<Vec<u128>>());
+
+        assert_eq!(ann_ids_test_2, &(20009250..20009257).collect::<Vec<u128>>());
+
+        assert_eq!(ann_ids_test_3, None);
+    }
+
+    #[test]
+    fn test_cat_ids_len() {
+        // 103, 108, 131
+        let coco = get_shared_coco();
+        let cat_ids_test_1 = coco
+            .coco_indices
+            .category_id_to_image_ids
+            .get(&103)
+            .unwrap();
+
+        let cat_ids_test_2 = coco
+            .coco_indices
+            .category_id_to_image_ids
+            .get(&108)
+            .unwrap();
+
+        let ann_ids_test_3 = coco.coco_indices.category_id_to_image_ids.get(&0);
+
+        assert_eq!(cat_ids_test_1.len(), 12);
+
+        assert_eq!(cat_ids_test_2.len(), 20);
+
+        assert_eq!(ann_ids_test_3, None);
+    }
+
+    #[test]
+    fn test_exact_cat_ids() {
+        // 103, 108, 131
+        let coco = get_shared_coco();
+        let cat_ids_test_1 = coco
+            .coco_indices
+            .category_id_to_image_ids
+            .get(&103)
+            .unwrap();
+
+        let cat_ids_test_2 = coco
+            .coco_indices
+            .category_id_to_image_ids
+            .get(&108)
+            .unwrap();
+
+        let ann_ids_test_3 = coco.coco_indices.category_id_to_image_ids.get(&0);
+
+        assert_eq!(
+            cat_ids_test_1,
+            &[
+                120584, 171757, 173302, 199771, 352582, 352684, 353970, 405195, 417249, 425221,
+                483999, 491497
+            ]
+        );
+
+        assert_eq!(
+            cat_ids_test_2,
+            &[
+                22705, 45229, 54654, 146155, 175364, 190236, 192047, 205514, 222825, 229311,
+                242934, 248400, 287714, 297353, 415741, 416343, 481386, 488673, 517056, 532901
+            ]
+        );
+
+        assert_eq!(ann_ids_test_3, None);
     }
 }

@@ -8,10 +8,9 @@ use log::{error, info};
 fn main() -> Result<()> {
     env_logger::init();
 
-    let ann_file =
-        "/home/dg084/datasets/obj-det-dataset/coco/images/annotations/stuff_val2017.json";
+    let ann_file = "./test_assets/stuff_val2017.json";
 
-    let root_dir = "/home/dg084/datasets/obj-det-dataset/coco/images/val2017";
+    let root_dir = "./test_assets/val_2017";
 
     let annotation_path = PathBuf::from(ann_file);
 
