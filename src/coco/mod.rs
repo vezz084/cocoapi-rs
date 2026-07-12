@@ -1,14 +1,8 @@
 pub mod coco_types;
 
-use std::{
-    collections::HashMap,
-    fs::File,
-    hash::Hash,
-    io::{BufReader, Error},
-    ops::Range,
-    path::PathBuf,
-};
+use std::{collections::HashMap, fs::File, hash::Hash, io::BufReader, ops::Range, path::PathBuf};
 
+use anyhow::Result;
 use log::{debug, error, info, warn};
 
 pub use coco_types::*;
@@ -27,7 +21,7 @@ pub struct COCO {
 }
 
 impl COCO {
-    pub fn new(root_dir: PathBuf, annotation_json_path: PathBuf) -> Result<Self, Error> {
+    pub fn new(root_dir: PathBuf, annotation_json_path: PathBuf) -> Result<Self> {
         let file = File::open(annotation_json_path)
             .inspect_err(|e| error!("Error Opening Annotation file: {e}"))?;
 
@@ -54,11 +48,16 @@ impl COCO {
         json_data.sort_annots_inplace();
         json_data.sort_categories_inplace();
 
+        info!("Total Images: {}", json_data.iter_images().len());
+        info!("Total Annotations: {}", json_data.iter_annotations().len());
+        info!("Total Categories: {}", json_data.iter_categories().len());
+
         info!("Creating indices...");
 
         let indices = COCOIndices::new(&json_data);
 
         info!("Indices created!");
+
         Ok(COCO {
             coco_dataset: json_data,
             root_dir: root_dir,

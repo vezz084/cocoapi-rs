@@ -1,10 +1,11 @@
 mod coco;
 use std::{path::PathBuf, str::FromStr};
 
+use anyhow::Result;
 use coco::COCO;
 use log::{error, info};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     env_logger::init();
 
     let ann_file =
