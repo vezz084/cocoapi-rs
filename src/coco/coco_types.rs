@@ -45,6 +45,16 @@ impl COCODetection {
         self.images.iter()
     }
 
+    pub fn get_image_at_index(&self, idx: usize) -> Option<&COCOImage> {
+        self.images.get(idx)
+    }
+    pub fn get_annotation_at_index(&self, idx: usize) -> Option<&Annotation> {
+        self.annotations.get(idx)
+    }
+    pub fn get_category_at_index(&self, idx: usize) -> Option<&COCOCategory> {
+        self.categories.get(idx)
+    }
+
     pub fn sort_images_inplace(&mut self) {
         self.images.sort_unstable_by_key(|coco_image| coco_image.id);
     }

@@ -1,6 +1,13 @@
 pub mod coco_types;
 
-use std::{collections::HashMap, fs::File, hash::Hash, io::BufReader, ops::Range, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    hash::Hash,
+    io::BufReader,
+    ops::Range,
+    path::PathBuf,
+};
 
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -50,17 +57,187 @@ impl COCO {
         })
     }
 
-    // pub fn get_images_from_ids(&self, ids: &[u32]) -> Vec<Option<COCOImage>> {
-    //     let mut result: Vec<Option<COCOImage>> = Vec::new();
+    pub fn get_images_from_ids(&self, ids: &[u32]) -> Vec<Option<&COCOImage>> {
+        let mut result = Vec::with_capacity(ids.len());
 
-    //     for coco_id in ids {
-    //         result.push( match self.coco_indices.image_id_to_image.get(coco_id){
-    //             Some(range) => self.coco_dataset.iter_images().filter(predicate),
-    //             None => None
-    //         });
-    //     }
-    //     return result;
-    // }
+        for image_id in ids {
+            result.push(match self.coco_indices.image_id_to_image.get(image_id) {
+                None => None,
+                Some(index) => self.coco_dataset.get_image_at_index(*index),
+            });
+        }
+
+        result
+    }
+
+    pub fn get_annotations_from_ids(&self, ids: &[u128]) -> Vec<Option<&Annotation>> {
+        let mut result = Vec::with_capacity(ids.len());
+
+        for annotation_id in ids {
+            result.push(
+                match self
+                    .coco_indices
+                    .annotation_id_to_annotation
+                    .get(annotation_id)
+                {
+                    None => None,
+                    Some(index) => self.coco_dataset.get_annotation_at_index(*index),
+                },
+            );
+        }
+
+        result
+    }
+
+    pub fn get_categories_from_ids(&self, ids: &[u32]) -> Vec<Option<&COCOCategory>> {
+        let mut result = Vec::with_capacity(ids.len());
+
+        for category_id in ids {
+            result.push(
+                match self.coco_indices.category_id_to_category.get(category_id) {
+                    None => None,
+                    Some(index) => self.coco_dataset.get_category_at_index(*index),
+                },
+            );
+        }
+
+        result
+    }
+
+    pub fn get_possible_annotations_from_image_ids(&self, ids: &[u32]) -> Option<Vec<&Annotation>> {
+        if ids.is_empty() {
+            return None;
+        }
+
+        let mut result = Vec::with_capacity(ids.len());
+
+        for image_id in ids {
+            if let Some(annot_ids) = self.coco_indices.image_id_to_annotation_ids.get(image_id) {
+                result.extend(
+                    self.get_annotations_from_ids(annot_ids)
+                        .into_iter()
+                        .flatten(),
+                );
+            }
+        }
+
+        if result.is_empty() {
+            return None;
+        }
+
+        Some(result)
+    }
+
+    pub fn get_possible_annotations_from_category_ids(
+        &self,
+        ids: &[u32],
+    ) -> Option<Vec<&Annotation>> {
+        if ids.is_empty() {
+            return None;
+        }
+
+        let mut result = Vec::with_capacity(ids.len());
+
+        for category_id in ids {
+            if let Some(annot_ids) = self
+                .coco_indices
+                .category_id_to_annotation_ids
+                .get(category_id)
+            {
+                result.extend(
+                    self.get_annotations_from_ids(annot_ids)
+                        .into_iter()
+                        .flatten(),
+                );
+            }
+        }
+
+        if result.is_empty() {
+            return None;
+        }
+
+        Some(result)
+    }
+
+    pub fn get_possible_annotations_from_filters(
+        &self,
+        image_ids: Option<&[u32]>,
+        category_ids: Option<&[u32]>,
+    ) -> Option<Vec<&Annotation>> {
+        if image_ids.is_none() && category_ids.is_none() {
+            return None;
+        }
+
+        if image_ids.is_none() {
+            // get only by categories
+            self.get_possible_annotations_from_category_ids(category_ids.unwrap())
+        } else if category_ids.is_none() {
+            self.get_possible_annotations_from_image_ids(image_ids.unwrap())
+        } else {
+            let filtered_by_image_ids =
+                self.get_possible_annotations_from_image_ids(image_ids.unwrap());
+            if let Some(filtered_annots) = filtered_by_image_ids {
+                Some(
+                    filtered_annots
+                        .into_iter()
+                        .filter(|annot| category_ids.unwrap().contains(&annot.category_id))
+                        .collect(),
+                )
+            } else {
+                return None;
+            }
+        }
+    }
+
+    pub fn get_possible_images_from_filters(
+        &self,
+        image_ids: Option<&[u32]>,
+        category_ids: Option<&[u32]>,
+    ) -> Option<Vec<&COCOImage>> {
+        if image_ids.is_none() && category_ids.is_none() {
+            return None;
+        }
+
+        let mut valid_ids: Vec<u32> = Vec::with_capacity(image_ids.unwrap_or(&[]).len());
+
+        if image_ids.is_none() {
+            // only filter by categories
+            for category_id in category_ids.unwrap() {
+                if let Some(image_id) = self.coco_indices.category_id_to_image_ids.get(category_id)
+                {
+                    valid_ids.extend(image_id.iter())
+                }
+            }
+        } else {
+            let filtered_annots = self.get_possible_annotations_from_image_ids(image_ids.unwrap());
+
+            if category_ids.is_none() {
+                if let Some(filtered_annots) = filtered_annots {
+                    valid_ids.extend(filtered_annots.iter().map(|annot| annot.image_id));
+                }
+            } else {
+                if let Some(filtered_annots) = filtered_annots {
+                    for annot in filtered_annots {
+                        if category_ids.unwrap().contains(&annot.category_id) {
+                            valid_ids.push(annot.image_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if valid_ids.is_empty() {
+            return None;
+        }
+
+        valid_ids.sort();
+        valid_ids.dedup();
+
+        let temp_vec: Vec<u32> = valid_ids.into_iter().collect();
+        let ans = self.get_images_from_ids(&temp_vec);
+
+        Some(ans.into_iter().flatten().collect())
+    }
 }
 
 impl COCOIndices {
