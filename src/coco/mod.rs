@@ -177,12 +177,16 @@ impl COCO {
             let filtered_by_image_ids =
                 self.get_possible_annotations_from_image_ids(image_ids.unwrap());
             if let Some(filtered_annots) = filtered_by_image_ids {
-                Some(
-                    filtered_annots
-                        .into_iter()
-                        .filter(|annot| category_ids.unwrap().contains(&annot.category_id))
-                        .collect(),
-                )
+                let filtered: Vec<_> = filtered_annots
+                    .into_iter()
+                    .filter(|annot| category_ids.unwrap().contains(&annot.category_id))
+                    .collect();
+
+                if filtered.is_empty() {
+                    None
+                } else {
+                    Some(filtered)
+                }
             } else {
                 return None;
             }
@@ -302,9 +306,9 @@ impl COCOIndices {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::OnceLock;
 
-    // The shared, global instance initialized exactly once
     static COCO_INSTANCE: OnceLock<COCO> = OnceLock::new();
 
     fn get_shared_coco() -> &'static COCO {
@@ -317,103 +321,163 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_annotation_count_for_image() {
-        let coco = get_shared_coco();
-        let ann_ids_test_1 = coco.coco_indices.image_id_to_annotation_ids.get(&581781);
-
-        let ann_ids_test_2 = coco.coco_indices.image_id_to_annotation_ids.get(&170278);
-
-        let ann_ids_test_3 = coco.coco_indices.image_id_to_annotation_ids.get(&0);
-
-        assert_eq!(ann_ids_test_1.unwrap().len(), 5);
-        assert_eq!(ann_ids_test_2.unwrap().len(), 7);
-        assert_eq!(ann_ids_test_3, None);
-    }
+    // --- IMAGE TO ANNOTATION ID MAPPING ---
 
     #[test]
-    fn test_exact_annotation_ids() {
+    fn test_annotation_count_for_image_581781() {
         let coco = get_shared_coco();
-        let ann_ids_test_1 = coco
-            .coco_indices
-            .image_id_to_annotation_ids
-            .get(&581781)
-            .unwrap();
-
-        let ann_ids_test_2 = coco
-            .coco_indices
-            .image_id_to_annotation_ids
-            .get(&170278)
-            .unwrap();
-
-        let ann_ids_test_3 = coco.coco_indices.image_id_to_annotation_ids.get(&0);
-
-        assert_eq!(ann_ids_test_1, &(20032796..20032801).collect::<Vec<u128>>());
-
-        assert_eq!(ann_ids_test_2, &(20009250..20009257).collect::<Vec<u128>>());
-
-        assert_eq!(ann_ids_test_3, None);
-    }
-
-    #[test]
-    fn test_cat_ids_len() {
-        // 103, 108, 131
-        let coco = get_shared_coco();
-        let cat_ids_test_1 = coco
-            .coco_indices
-            .category_id_to_image_ids
-            .get(&103)
-            .unwrap();
-
-        let cat_ids_test_2 = coco
-            .coco_indices
-            .category_id_to_image_ids
-            .get(&108)
-            .unwrap();
-
-        let ann_ids_test_3 = coco.coco_indices.category_id_to_image_ids.get(&0);
-
-        assert_eq!(cat_ids_test_1.len(), 12);
-
-        assert_eq!(cat_ids_test_2.len(), 20);
-
-        assert_eq!(ann_ids_test_3, None);
-    }
-
-    #[test]
-    fn test_exact_cat_ids() {
-        // 103, 108, 131
-        let coco = get_shared_coco();
-        let cat_ids_test_1 = coco
-            .coco_indices
-            .category_id_to_image_ids
-            .get(&103)
-            .unwrap();
-
-        let cat_ids_test_2 = coco
-            .coco_indices
-            .category_id_to_image_ids
-            .get(&108)
-            .unwrap();
-
-        let ann_ids_test_3 = coco.coco_indices.category_id_to_image_ids.get(&0);
+        let ids = coco.coco_indices.image_id_to_annotation_ids.get(&581781);
 
         assert_eq!(
-            cat_ids_test_1,
-            &[
-                120584, 171757, 173302, 199771, 352582, 352684, 353970, 405195, 417249, 425221,
-                483999, 491497
-            ]
+            ids.map(|v| v.len()),
+            Some(5),
+            "Image ID 581781 should have exactly 5 annotations"
         );
+    }
+
+    #[test]
+    fn test_annotation_count_for_image_170278() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.image_id_to_annotation_ids.get(&170278);
 
         assert_eq!(
-            cat_ids_test_2,
-            &[
-                22705, 45229, 54654, 146155, 175364, 190236, 192047, 205514, 222825, 229311,
-                242934, 248400, 287714, 297353, 415741, 416343, 481386, 488673, 517056, 532901
-            ]
+            ids.map(|v| v.len()),
+            Some(7),
+            "Image ID 170278 should have exactly 7 annotations"
         );
+    }
 
-        assert_eq!(ann_ids_test_3, None);
+    #[test]
+    fn test_annotation_count_for_missing_image_0() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.image_id_to_annotation_ids.get(&0);
+
+        assert!(
+            ids.is_none(),
+            "Non-existent Image ID 0 should return None for annotation mapping"
+        );
+    }
+
+    #[test]
+    fn test_exact_annotation_ids_for_image_581781() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.image_id_to_annotation_ids.get(&581781);
+
+        assert_eq!(
+            ids.map(|v| v.as_slice()),
+            Some([20032796, 20032797, 20032798, 20032799, 20032800].as_slice()),
+            "Mismatch in expected annotation ID sequence for Image ID 581781"
+        );
+    }
+
+    #[test]
+    fn test_exact_annotation_ids_for_image_170278() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.image_id_to_annotation_ids.get(&170278);
+
+        assert_eq!(
+            ids.map(|v| v.as_slice()),
+            Some(
+                [
+                    20009250, 20009251, 20009252, 20009253, 20009254, 20009255, 20009256
+                ]
+                .as_slice()
+            ),
+            "Mismatch in expected annotation ID sequence for Image ID 170278"
+        );
+    }
+
+    // --- CATEGORY TO IMAGE ID MAPPING ---
+
+    #[test]
+    fn test_cat_ids_len_for_category_103() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.category_id_to_image_ids.get(&103);
+
+        assert_eq!(
+            ids.map(|v| v.len()),
+            Some(12),
+            "Category ID 103 should map to exactly 12 images"
+        );
+    }
+
+    #[test]
+    fn test_cat_ids_len_for_category_108() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.category_id_to_image_ids.get(&108);
+
+        assert_eq!(
+            ids.map(|v| v.len()),
+            Some(20),
+            "Category ID 108 should map to exactly 20 images"
+        );
+    }
+
+    #[test]
+    fn test_cat_ids_for_missing_category_0() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.category_id_to_image_ids.get(&0);
+
+        assert!(
+            ids.is_none(),
+            "Non-existent Category ID 0 should return None for image mapping"
+        );
+    }
+
+    #[test]
+    fn test_exact_image_ids_for_category_103() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.category_id_to_image_ids.get(&103);
+
+        assert_eq!(
+            ids.map(|v| v.as_slice()),
+            Some(
+                [
+                    120584, 171757, 173302, 199771, 352582, 352684, 353970, 405195, 417249, 425221,
+                    483999, 491497
+                ]
+                .as_slice()
+            ),
+            "Mismatch in expected image IDs for Category ID 103"
+        );
+    }
+
+    #[test]
+    fn test_exact_image_ids_for_category_108() {
+        let coco = get_shared_coco();
+        let ids = coco.coco_indices.category_id_to_image_ids.get(&108);
+
+        assert_eq!(
+            ids.map(|v| v.as_slice()),
+            Some(
+                [
+                    22705, 45229, 54654, 146155, 175364, 190236, 192047, 205514, 222825, 229311,
+                    242934, 248400, 287714, 297353, 415741, 416343, 481386, 488673, 517056, 532901
+                ]
+                .as_slice()
+            ),
+            "Mismatch in expected image IDs for Category ID 108"
+        );
+    }
+
+    // --- STRUCTURAL INTEGRITY / INVARIANT TEST ---
+
+    #[test]
+    fn test_index_integrity_invariants() {
+        let coco = get_shared_coco();
+        let indices = &coco.coco_indices;
+
+        // Verify that every image referenced by a category actually contains annotations
+        for (cat_id, image_ids) in &indices.category_id_to_image_ids {
+            for image_id in image_ids {
+                let annotations = indices.image_id_to_annotation_ids.get(image_id);
+                assert!(
+                    annotations.is_some(),
+                    "Integrity failure: Category {} references Image {}, but that image has no indexed annotations",
+                    cat_id,
+                    image_id
+                );
+            }
+        }
     }
 }
