@@ -5,9 +5,12 @@ use std::{
     fs::File,
     hash::Hash,
     io::BufReader,
+    io::Read,
     ops::Range,
     path::PathBuf,
 };
+
+use memmap2::Mmap;
 
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -35,10 +38,21 @@ impl COCO {
         let file = File::open(annotation_json_path)
             .inspect_err(|e| error!("Error Opening Annotation file: {e}"))?;
 
-        let file_buffer = BufReader::new(file);
+        // Memory map the file. (Almost a 2x speed up)
+        // This takes near-zero RAM and happens instantly.
+        let mmap = unsafe {
+            Mmap::map(&file).inspect_err(|e| error!("Error Mapping The File to Memory: {e}"))?
+        };
+        // The alternative is loading the whole file in memory
+        // let mut buffer = Vec::with_capacity(file.metadata()?.len() as usize);
+        // file.read_to_end(&mut buffer)?;
+        // But this consumes a lot of memory
+        //
+        // Must communicate with the user to make sure the file does not change while it is being read
+        // OS level locks maybe?
 
-        let json_data: COCODetection = serde_json::from_reader(file_buffer)
-            .inspect_err(|e| error!("Error deserializing json file: {e}"))?;
+        let json_data: COCODetection = serde_json::from_slice(&mmap)
+            .inspect_err(|e| error!("Error Deserializing The File: {e}"))?;
 
         info!("Total Images: {}", json_data.iter_images().len());
         info!("Total Annotations: {}", json_data.iter_annotations().len());
