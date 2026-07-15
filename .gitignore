@@ -1,2 +1,5 @@
 /target
 perf*
+*.svg
+*.txt
+*.json
