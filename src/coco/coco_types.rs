@@ -40,6 +40,15 @@ pub struct COCODetection {
     categories: Vec<COCOCategory>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct COCOPrediction {
+    image_id: u32,
+    category_id: u32,
+    bbox: [f32; 4],
+    score: f32,
+    area: f32,
+}
+
 impl COCODetection {
     pub fn iter_images(&self) -> Iter<'_, COCOImage> {
         self.images.iter()

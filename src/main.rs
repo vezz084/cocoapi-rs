@@ -8,7 +8,10 @@ use log::{error, info};
 fn main() -> Result<()> {
     env_logger::init();
 
-    let ann_file = "./test_assets/stuff_val2017.json";
+    // let ann_file = "./test_assets/stuff_val2017.json";
+
+    let ann_file =
+        "/home/dg084/datasets/obj-det-dataset/coco/images/annotations/instances_val2017.json";
 
     let root_dir = "./test_assets/val_2017";
 
@@ -16,7 +19,9 @@ fn main() -> Result<()> {
 
     let root_dir_path = PathBuf::from(&root_dir);
 
-    let coco = COCO::new(root_dir_path, annotation_path)?;
+    let mut coco = COCO::new(root_dir_path, annotation_path)?;
+
+    coco.load_coco_predictions(PathBuf::from("./test_assets/detections.json"))?;
 
     info!("Done");
 

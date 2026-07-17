@@ -31,6 +31,7 @@ pub struct COCO {
     coco_dataset: COCODetection,
     root_dir: PathBuf,
     coco_indices: COCOIndices,
+    coco_results: Option<Vec<COCOPrediction>>,
 }
 
 impl COCO {
@@ -68,6 +69,7 @@ impl COCO {
             coco_dataset: json_data,
             root_dir: root_dir,
             coco_indices: indices,
+            coco_results: None,
         })
     }
 
@@ -255,6 +257,21 @@ impl COCO {
         let ans = self.get_images_from_ids(&temp_vec);
 
         Some(ans.into_iter().flatten().collect())
+    }
+
+    pub fn load_coco_predictions(&mut self, prediction_file_path: PathBuf) -> Result<()> {
+        let file = File::open(prediction_file_path)
+            .inspect_err(|e| error!("Error opening prediction file: {e}"))?;
+        let file_buffer = BufReader::new(file);
+
+        let mut coco_predictions: Vec<COCOPrediction> = Vec::new();
+
+        coco_predictions = serde_json::from_reader(file_buffer)
+            .inspect_err(|e| error!("Error deserializing json file: {e}"))?;
+
+        self.coco_results = Some(coco_predictions);
+
+        Ok(())
     }
 }
 
