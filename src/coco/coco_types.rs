@@ -41,12 +41,52 @@ pub struct COCODetection {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct COCOPrediction {
-    image_id: u32,
-    category_id: u32,
-    bbox: [f32; 4],
-    score: f32,
-    area: f32,
+pub struct Prediction {
+    pub image_id: u32,
+    pub category_id: u32,
+    pub bbox: [f32; 4],
+    pub score: f32,
+    pub area: f32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct COCOPredictions {
+    pub predictions: Vec<Prediction>,
+}
+
+impl COCOPredictions {
+    pub fn sort_predictions_by_score_htl(&mut self) {
+        self.predictions
+            .sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    }
+
+    pub fn get_predictions_from_image_id(
+        &self,
+        image_id: u32,
+    ) -> impl Iterator<Item = &Prediction> {
+        self.predictions
+            .iter()
+            .filter(move |prediction| prediction.image_id == image_id)
+    }
+
+    pub fn get_predictions_from_category_id(
+        &self,
+        category_id: u32,
+    ) -> impl Iterator<Item = &Prediction> {
+        self.predictions
+            .iter()
+            .filter(move |prediction| prediction.category_id == category_id)
+    }
+
+    pub fn get_predictions_from_filters(
+        &self,
+        category_id: u32,
+        image_id: u32,
+    ) -> impl Iterator<Item = &Prediction> {
+        self.predictions.iter().filter(move |prediction| {
+            prediction.category_id == category_id && prediction.image_id == image_id
+        })
+    }
 }
 
 impl COCODetection {

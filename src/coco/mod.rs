@@ -1,3 +1,4 @@
+pub mod coco_eval;
 pub mod coco_types;
 
 use std::{
@@ -31,7 +32,7 @@ pub struct COCO {
     coco_dataset: COCODetection,
     root_dir: PathBuf,
     coco_indices: COCOIndices,
-    coco_results: Option<Vec<COCOPrediction>>,
+    coco_results: Option<COCOPredictions>,
 }
 
 impl COCO {
@@ -71,6 +72,31 @@ impl COCO {
             coco_indices: indices,
             coco_results: None,
         })
+    }
+
+    pub fn get_all_annotations(&self) -> Vec<&Annotation> {
+        self.coco_dataset.iter_annotations().collect()
+    }
+
+    pub fn get_all_category_ids(&self) -> Vec<u32> {
+        self.coco_dataset
+            .iter_categories()
+            .map(|coco_category| coco_category.id)
+            .collect()
+    }
+
+    pub fn get_all_image_ids(&self) -> Vec<u32> {
+        self.coco_dataset
+            .iter_images()
+            .map(|coco_image| coco_image.id)
+            .collect()
+    }
+
+    pub fn get_all_results(&self) -> Option<&COCOPredictions> {
+        if self.coco_results.is_none() {
+            return None;
+        }
+        Some(self.coco_results.as_ref().unwrap())
     }
 
     pub fn get_images_from_ids(&self, ids: &[u32]) -> Vec<Option<&COCOImage>> {
@@ -264,10 +290,13 @@ impl COCO {
             .inspect_err(|e| error!("Error opening prediction file: {e}"))?;
         let file_buffer = BufReader::new(file);
 
-        let mut coco_predictions: Vec<COCOPrediction> = Vec::new();
+        let predictions: Vec<Prediction> = serde_json::from_reader(file_buffer)
+            .inspect_err(|e| error!("Error deserializing predictions json file: {e}"))?;
 
-        coco_predictions = serde_json::from_reader(file_buffer)
-            .inspect_err(|e| error!("Error deserializing json file: {e}"))?;
+        // 2. Wrap it into your COCOPredictions struct
+        let mut coco_predictions = COCOPredictions { predictions };
+
+        coco_predictions.sort_predictions_by_score_htl();
 
         self.coco_results = Some(coco_predictions);
 
