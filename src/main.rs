@@ -1,10 +1,13 @@
 mod coco;
 use std::{path::PathBuf, str::FromStr};
 
+use coco::coco_eval::COCOEval;
+
 use anyhow::Result;
 use coco::COCO;
 use log::{error, info};
 
+#[inline(never)]
 fn main() -> Result<()> {
     env_logger::init();
 
@@ -22,6 +25,10 @@ fn main() -> Result<()> {
     let mut coco = COCO::new(root_dir_path, annotation_path)?;
 
     coco.load_coco_predictions(PathBuf::from("./test_assets/detections.json"))?;
+
+    let coco_eval = COCOEval::new(&coco);
+
+    coco_eval.perform_evaluation();
 
     info!("Done");
 
