@@ -7,8 +7,11 @@ use crate::coco::{Annotation, COCO, COCOPredictions, Prediction};
 
 use super::coco_types;
 
+use ndarray::prelude::*;
+
+#[derive(Debug)]
 pub struct COCOEvalParams {
-    iou_thresholds: Vec<f64>,
+    iou_thresholds: Vec<f32>,
     recall_thresholds: Vec<f64>,
     max_detections: Vec<u8>,
     area_ranges: Vec<(f64, f64)>,
@@ -41,8 +44,9 @@ impl COCOEvalParams {
     }
 }
 
+#[derive(Debug)]
 pub struct COCOEval<'a> {
-    evaluation_parameters: COCOEvalParams,
+    pub evaluation_parameters: COCOEvalParams,
     coco_dataset: &'a COCO,
 }
 
@@ -68,34 +72,87 @@ pub fn iou(bbox_a: &[f32; 4], bbox_b: &[f32; 4]) -> f32 {
 }
 #[inline(never)]
 pub fn populate_ious(
-    ious: &mut HashMap<(u32, u32), Vec<f32>>,
-    // predictions: &Vec<&Prediction>,
-    // gt_annotations: &Vec<&Annotation>,
+    ious: &mut HashMap<(u32, u32), Array2<f32>>,
     category_id: u32,
     image_id: u32,
     gt_bboxes: &Vec<&[f32; 4]>,
     pred_bboxes: &Vec<&[f32; 4]>,
 ) -> () {
-    // if let Some(val) = ious.get_mut(&(image_id, category_id)) {
-    //     val.reserve(gt_bboxes.len() * pred_bboxes.len())
-    // }
-    //
-    ious.insert(
-        (image_id, category_id),
-        Vec::with_capacity(gt_bboxes.len() * pred_bboxes.len()),
-    );
+    let mut vec: Vec<f32> = Vec::with_capacity(gt_bboxes.len() * pred_bboxes.len());
 
-    for gt_bbox in gt_bboxes {
-        for pred_bbox in pred_bboxes {
-            // ious.insert((image_id, category_id), iou(*gt_bbox, *pred_bbox));
-            ious.entry((image_id, category_id))
-                .and_modify(|inner_vec| inner_vec.push(iou(*gt_bbox, *pred_bbox)));
-            // ious.
+    for pred_bbox in pred_bboxes {
+        for gt_bbox in gt_bboxes {
+            vec.push(iou(*gt_bbox, *pred_bbox));
         }
     }
+
+    ious.insert(
+        (image_id, category_id),
+        Array2::from_shape_vec((pred_bboxes.len(), gt_bboxes.len()), vec).unwrap(),
+    );
 }
 
 impl<'a> COCOEval<'a> {
+    #[inline(never)]
+    fn get_matches(
+        &self,
+        calculated_ious: &Array2<f32>,
+        area_range: &(f64, f64),
+        max_detections: u8,
+    ) {
+        // Get the actual number of rows (or axis length) in the array
+        let dt_len = calculated_ious.shape()[0];
+
+        // Clamp max_detections so it never exceeds the actual dimension size
+        let end = (max_detections as usize).min(dt_len);
+
+        let filtered_detections = calculated_ious.slice(s![..end, ..]);
+
+        let mut gt_matches: Array2<bool> = Array2::<bool>::default((
+            self.evaluation_parameters.iou_thresholds.len(),
+            calculated_ious.shape()[1],
+        ));
+        let mut det_matches: Array2<bool> = Array2::<bool>::default((
+            self.evaluation_parameters.iou_thresholds.len(),
+            filtered_detections.shape()[0],
+        ));
+        for (iou_threshold_idx, iou_threshold) in
+            self.evaluation_parameters.iou_thresholds.iter().enumerate()
+        {
+            let mut gt_matches_row = gt_matches.row_mut(iou_threshold_idx);
+            let mut det_matches_row = det_matches.row_mut(iou_threshold_idx);
+
+            for (det_idx, gt_row) in filtered_detections.rows().into_iter().enumerate() {
+                let mut matched_gt_idx: Option<usize> = None;
+
+                for (gt_idx, matched_iou) in gt_row.iter().enumerate() {
+                    // Below threshold
+                    if matched_iou < iou_threshold {
+                        continue;
+                    }
+
+                    // Ground truth is already matched for this threshold
+                    if gt_matches_row[gt_idx] {
+                        continue;
+                    }
+
+                    // Detection has already been assigned to a GT
+                    if matched_gt_idx.is_some() {
+                        break;
+                    }
+
+                    matched_gt_idx = Some(gt_idx);
+                }
+
+                // Record match if one was found
+                if let Some(gt_idx) = matched_gt_idx {
+                    gt_matches_row[gt_idx] = true;
+                    det_matches_row[det_idx] = true;
+                }
+            }
+        }
+    }
+
     #[inline(never)]
     pub fn perform_evaluation(&self) -> Option<()> {
         let gt_annotations = self.coco_dataset.get_all_annotations();
@@ -106,9 +163,6 @@ impl<'a> COCOEval<'a> {
         }
 
         let predictions = predictions.unwrap();
-
-        // let image_ids_gt = self.coco_dataset.get_all_image_ids();
-        // let category_ids_gt = self.coco_dataset.get_all_category_ids();
 
         let mut gt_annotations_eval_map: HashMap<(u32, u32), Vec<&[f32; 4]>> =
             HashMap::with_capacity(gt_annotations.len());
@@ -130,21 +184,11 @@ impl<'a> COCOEval<'a> {
                 .or_insert(vec![&prediction.bbox]);
         }
 
-        // dbg!(&pred_eval_map.keys());
-        // dbg!(&gt_annotations_eval_map.keys());
-
-        // // let predictions_vec = predictions.unwrap();
-        // // let requested_max = usize::from(*self.evaluation_parameters.max_detections.last().unwrap());
-        // // let end_index = predictions_vec.len().min(requested_max);
-        // // let max_predictions: &[COCOPrediction] = &predictions_vec[0..end_index];
-        // //
-        // //
-
         let image_ids_gt = self.coco_dataset.get_all_image_ids();
         let category_ids_gt = self.coco_dataset.get_all_category_ids();
 
-        let mut ious: HashMap<(u32, u32), Vec<f32>> =
-            HashMap::with_capacity(image_ids_gt.len() * category_ids_gt.len());
+        let mut ious: HashMap<(u32, u32), Array2<f32>> =
+            HashMap::with_capacity(gt_annotations_eval_map.keys().len());
 
         for (gt_image_id, gt_category_id) in gt_annotations_eval_map.keys() {
             let gt_bbox = gt_annotations_eval_map.get(&(*gt_image_id, *gt_category_id));
@@ -163,13 +207,19 @@ impl<'a> COCOEval<'a> {
             }
         }
 
-        // dbg!(&ious);
-
-        // // let gt_evaluation: HashMap<(u32, u32), Vec<&Annotation>> =
-        // //     HashMap::with_capacity(image_ids_gt.len() * category_ids_gt.len());
-
-        // // let detection_evaluation: HashMap<(u32, u32), &COCOPrediction> =
-        // //     HashMap::with_capacity(predictions.unwrap().predictions.len());
+        for category_id in category_ids_gt {
+            for area_range in &self.evaluation_parameters.area_ranges {
+                for gt_image_id in &image_ids_gt {
+                    if let Some(val) = ious.get(&(*gt_image_id, category_id)) {
+                        self.get_matches(
+                            val,
+                            area_range,
+                            *self.evaluation_parameters.max_detections.last().unwrap(),
+                        );
+                    }
+                }
+            }
+        }
 
         return Some(());
     }

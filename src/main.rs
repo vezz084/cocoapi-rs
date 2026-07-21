@@ -28,6 +28,8 @@ fn main() -> Result<()> {
 
     let coco_eval = COCOEval::new(&coco);
 
+    // dbg!(&coco_eval.evaluation_parameters);
+
     coco_eval.perform_evaluation();
 
     info!("Done");
