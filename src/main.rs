@@ -26,11 +26,11 @@ fn main() -> Result<()> {
 
     coco.load_coco_predictions(PathBuf::from("./test_assets/detections.json"))?;
 
-    let coco_eval = COCOEval::new(&coco);
+    let mut coco_eval = COCOEval::new(&coco);
 
     // dbg!(&coco_eval.evaluation_parameters);
 
-    coco_eval.perform_evaluation();
+    coco_eval.perform_evaluation()?;
 
     info!("Done");
 

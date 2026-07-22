@@ -1,13 +1,12 @@
-use std::{collections::HashMap, prelude};
+use std::collections::HashMap;
 
+use anyhow::Result;
 use log::{error, warn};
-use memmap2::Advice::PopulateRead;
+use ndarray::concatenate;
 
-use crate::coco::{Annotation, COCO, COCOPredictions, Prediction};
+use crate::coco::COCO;
 
-use super::coco_types;
-
-use ndarray::prelude::*;
+use ndarray::{Zip, prelude::*};
 
 #[derive(Debug)]
 pub struct COCOEvalParams {
@@ -16,6 +15,8 @@ pub struct COCOEvalParams {
     max_detections: Vec<u8>,
     area_ranges: Vec<(f64, f64)>,
     use_categories: bool,
+    image_ids: Option<Vec<u32>>,
+    category_ids: Option<Vec<u32>>,
 }
 
 impl COCOEvalParams {
@@ -40,7 +41,16 @@ impl COCOEvalParams {
                 (96_f64.powi(2), 1e5_f64.powi(2)),
             ],
             use_categories: true,
+            image_ids: None,
+            category_ids: None,
         }
+    }
+
+    pub fn set_image_ids(&mut self, image_ids: Vec<u32>) {
+        self.image_ids = Some(image_ids);
+    }
+    pub fn set_category_ids(&mut self, category_ids: Vec<u32>) {
+        self.category_ids = Some(category_ids);
     }
 }
 
@@ -72,41 +82,58 @@ pub fn iou(bbox_a: &[f32; 4], bbox_b: &[f32; 4]) -> f32 {
 }
 #[inline(never)]
 pub fn populate_ious(
-    ious: &mut HashMap<(u32, u32), Array2<f32>>,
+    ious: &mut HashMap<(u32, u32), Array3<f32>>,
     category_id: u32,
     image_id: u32,
     gt_bboxes: &Vec<&[f32; 4]>,
     pred_bboxes: &Vec<&[f32; 4]>,
 ) -> () {
-    let mut vec: Vec<f32> = Vec::with_capacity(gt_bboxes.len() * pred_bboxes.len());
+    let mut vec: Vec<f32> = Vec::with_capacity(gt_bboxes.len() * pred_bboxes.len() * 2);
 
     for pred_bbox in pred_bboxes {
         for gt_bbox in gt_bboxes {
             vec.push(iou(*gt_bbox, *pred_bbox));
+            vec.push(pred_bbox[2] * pred_bbox[3]);
         }
     }
 
     ious.insert(
         (image_id, category_id),
-        Array2::from_shape_vec((pred_bboxes.len(), gt_bboxes.len()), vec).unwrap(),
+        Array3::from_shape_vec((pred_bboxes.len(), gt_bboxes.len(), 2), vec).unwrap(),
     );
+}
+
+pub fn cumsum_axis1(mask: Array2<bool>) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros(mask.raw_dim());
+
+    Zip::from(out.lanes_mut(Axis(1)))
+        .and(mask.lanes(Axis(1)))
+        .for_each(|mut out_row, mask_row| {
+            let mut acc = 0.0;
+            for (&b, val) in mask_row.iter().zip(out_row.iter_mut()) {
+                acc += b as u8 as f64; // true -> 1.0, false -> 0.0
+                *val = acc;
+            }
+        });
+
+    out
 }
 
 impl<'a> COCOEval<'a> {
     #[inline(never)]
     fn get_matches(
         &self,
-        calculated_ious: &Array2<f32>,
+        calculated_ious: &Array3<f32>,
         area_range: &(f64, f64),
         max_detections: u8,
-    ) {
+    ) -> (Array2<bool>, Array2<bool>) {
         // Get the actual number of rows (or axis length) in the array
         let dt_len = calculated_ious.shape()[0];
 
         // Clamp max_detections so it never exceeds the actual dimension size
         let end = (max_detections as usize).min(dt_len);
 
-        let filtered_detections = calculated_ious.slice(s![..end, ..]);
+        let filtered_detections = calculated_ious.slice(s![..end, .., ..]);
 
         let mut gt_matches: Array2<bool> = Array2::<bool>::default((
             self.evaluation_parameters.iou_thresholds.len(),
@@ -116,27 +143,36 @@ impl<'a> COCOEval<'a> {
             self.evaluation_parameters.iou_thresholds.len(),
             filtered_detections.shape()[0],
         ));
+
         for (iou_threshold_idx, iou_threshold) in
             self.evaluation_parameters.iou_thresholds.iter().enumerate()
         {
             let mut gt_matches_row = gt_matches.row_mut(iou_threshold_idx);
             let mut det_matches_row = det_matches.row_mut(iou_threshold_idx);
 
-            for (det_idx, gt_row) in filtered_detections.rows().into_iter().enumerate() {
+            for (det_idx, gt_metrics_matrix) in filtered_detections.outer_iter().enumerate() {
                 let mut matched_gt_idx: Option<usize> = None;
 
-                for (gt_idx, matched_iou) in gt_row.iter().enumerate() {
-                    // Below threshold
-                    if matched_iou < iou_threshold {
+                for (gt_idx, metrics) in gt_metrics_matrix.outer_iter().enumerate() {
+                    let matched_iou = metrics[0];
+                    let det_area = metrics[1];
+
+                    // 1. Check IoU threshold
+                    if matched_iou < *iou_threshold {
                         continue;
                     }
 
-                    // Ground truth is already matched for this threshold
+                    // 2. Check Area Range [min_area, max_area]
+                    if (det_area as f64) < area_range.0 || (det_area as f64) > area_range.1 {
+                        continue;
+                    }
+
+                    // 3. Skip if Ground Truth is already matched for this IoU threshold
                     if gt_matches_row[gt_idx] {
                         continue;
                     }
 
-                    // Detection has already been assigned to a GT
+                    // 4. Skip if Detection has already been assigned to a GT
                     if matched_gt_idx.is_some() {
                         break;
                     }
@@ -151,15 +187,17 @@ impl<'a> COCOEval<'a> {
                 }
             }
         }
+
+        (gt_matches, det_matches)
     }
 
     #[inline(never)]
-    pub fn perform_evaluation(&self) -> Option<()> {
+    pub fn perform_evaluation(&mut self) -> Result<Option<()>> {
         let gt_annotations = self.coco_dataset.get_all_annotations();
         let predictions = self.coco_dataset.get_all_results();
         if predictions.is_none() {
             error!("No results");
-            return None;
+            return Ok(None);
         }
 
         let predictions = predictions.unwrap();
@@ -169,6 +207,11 @@ impl<'a> COCOEval<'a> {
 
         let mut pred_eval_map: HashMap<(u32, u32), Vec<&[f32; 4]>> =
             HashMap::with_capacity(predictions.predictions.len());
+
+        self.evaluation_parameters
+            .set_image_ids(self.coco_dataset.get_all_image_ids());
+        self.evaluation_parameters
+            .set_category_ids(self.coco_dataset.get_all_category_ids());
 
         for gt_annotation in gt_annotations {
             gt_annotations_eval_map
@@ -184,10 +227,7 @@ impl<'a> COCOEval<'a> {
                 .or_insert(vec![&prediction.bbox]);
         }
 
-        let image_ids_gt = self.coco_dataset.get_all_image_ids();
-        let category_ids_gt = self.coco_dataset.get_all_category_ids();
-
-        let mut ious: HashMap<(u32, u32), Array2<f32>> =
+        let mut ious: HashMap<(u32, u32), Array3<f32>> =
             HashMap::with_capacity(gt_annotations_eval_map.keys().len());
 
         for (gt_image_id, gt_category_id) in gt_annotations_eval_map.keys() {
@@ -206,22 +246,68 @@ impl<'a> COCOEval<'a> {
                 warn!("({gt_image_id}, {gt_category_id}) pair doesnt exist in predictions");
             }
         }
+        let all_categories = self.evaluation_parameters.category_ids.as_ref().unwrap();
+        let area_ranges = &self.evaluation_parameters.area_ranges;
+        let all_gt_ids = self.evaluation_parameters.image_ids.as_ref().unwrap();
 
-        for category_id in category_ids_gt {
-            for area_range in &self.evaluation_parameters.area_ranges {
-                for gt_image_id in &image_ids_gt {
-                    if let Some(val) = ious.get(&(*gt_image_id, category_id)) {
-                        self.get_matches(
+        let mut accumulation: Vec<Option<(Array2<bool>, Array2<bool>)>> =
+            Vec::with_capacity(all_categories.len() * area_ranges.len() * all_gt_ids.len());
+        for category_id in all_categories {
+            for area_range in area_ranges {
+                for gt_image_id in all_gt_ids {
+                    if let Some(val) = ious.get(&(*gt_image_id, *category_id)) {
+                        accumulation.push(Some(self.get_matches(
                             val,
                             area_range,
                             *self.evaluation_parameters.max_detections.last().unwrap(),
-                        );
+                        )));
+                    } else {
+                        accumulation.push(None);
                     }
                 }
             }
         }
 
-        return Some(());
+        for category_idx in 0..all_categories.len() {
+            let category_stride = category_idx * area_ranges.len() * all_gt_ids.len();
+            for area_rng_idx in 0..area_ranges.len() {
+                let area_range_stride = area_rng_idx * all_gt_ids.len();
+                for max_det in &self.evaluation_parameters.max_detections {
+                    // get all accumulations for these filters
+                    let start_idx = category_stride + area_range_stride;
+                    let end_idx = start_idx + all_gt_ids.len();
+                    let all_corresponding_gts = &accumulation[start_idx..end_idx];
+                    let filtered_corresponding_gts: Vec<&(Array2<bool>, Array2<bool>)> =
+                        all_corresponding_gts
+                            .iter()
+                            .filter_map(|elem| elem.as_ref())
+                            .collect();
+
+                    let max_det = *max_det as usize;
+
+                    // We map the iterator on-the-fly directly into a Vec of views.
+                    let tp_views: Vec<_> = filtered_corresponding_gts
+                        .iter()
+                        .map(|gt| {
+                            let max_end_idx = gt.1.shape()[1].min(max_det);
+                            gt.1.slice(s![.., ..max_end_idx])
+                        })
+                        .collect();
+
+                    let tps: Array2<bool> = concatenate(Axis(1), &tp_views)
+                        .expect("Row counts must match across all arrays");
+
+                    let fps: Array2<bool> = !&tps;
+
+                    let tp_sum = cumsum_axis1(tps);
+                    let fp_sum = cumsum_axis1(fps);
+
+                    // if filtered_corresponding_gts.
+                }
+            }
+        }
+
+        return Ok(Some(()));
     }
     #[inline(never)]
     pub fn new(coco_dataset: &'a COCO) -> Self {
